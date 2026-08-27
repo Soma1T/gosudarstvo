@@ -714,6 +714,17 @@ const PLAYER_ACTIONS = {
     if (bundleIsEmpty(give) && bundleIsEmpty(want)) return fail('пустое предложение');
     const err = checkCanGive(state, p, give);
     if (err) return fail(err);
+
+    // Ничего не просим взамен — это просто передача, подтверждение не нужно.
+    if (bundleIsEmpty(want)) {
+      const plotErr = checkPlotsReceivable(state, to, give);
+      if (plotErr) return fail(plotErr);
+      moveBundle(state, p, to, give);
+      E.pushTx(state, { kind: 'transfer', fromId: p.id, toId: to.id, items: give, note: `передача: ${describeBundle(give)}` });
+      E.notify(state, to.id, `${p.name} передал вам: ${describeBundle(give)}`, 'ok');
+      return done(`Передано: ${describeBundle(give)}`);
+    }
+
     const r = createRequest(state, {
       kind: 'trade',
       initiatorId: p.id,
@@ -805,11 +816,34 @@ const PLAYER_ACTIONS = {
     p.money -= price;
     if (lord) lord.money += price;
     else state.treasury += price;
+
+    // Выкупаясь, крестьянин оставляет все свои участки феодалу.
+    const plots = E.plotsOf(state, p.id).map((l) => l.id);
+    const plotTarget = lord ? lord.id : stateFundOwnerId(state);
+    if (plots.length) movePlotsTo(state, plots, plotTarget);
+
     p.lordId = null;
-    E.pushTx(state, { kind: 'ransom', fromId: p.id, toId: lord ? lord.id : 'TREASURY', items: { money: price }, note: 'выкуп из зависимости' });
-    if (lord) E.notify(state, lord.id, `${p.name} выкупился за ${price} монет.`, 'economy');
-    E.pushFeed(state, `${p.name} выкупился и стал вольным крестьянином.`, 'economy');
-    return done('Вы вольный крестьянин');
+    E.pushTx(state, {
+      kind: 'ransom',
+      fromId: p.id,
+      toId: lord ? lord.id : 'TREASURY',
+      items: { money: price, plots },
+      note: `выкуп из зависимости; участки (${plots.join(', ') || '—'}) → ${pname(state, plotTarget)}`,
+    });
+    if (lord) {
+      E.notify(
+        state,
+        lord.id,
+        `${p.name} выкупился за ${price} монет${plots.length ? ` и оставил вам ${plots.length} участков` : ''}.`,
+        'economy',
+      );
+    }
+    E.pushFeed(
+      state,
+      `${p.name} выкупился и стал вольным крестьянином${plots.length ? `, оставив ${plots.length} участков феодалу` : ''}.`,
+      'economy',
+    );
+    return done(plots.length ? `Вы вольный крестьянин. Участки (${plots.length}) остались феодалу.` : 'Вы вольный крестьянин');
   },
 
   requestPatronage(state, p, d) {
@@ -882,8 +916,9 @@ const PLAYER_ACTIONS = {
     if (!running(state)) return fail('игра не идёт');
     if (p.role !== 'merchant') return fail('на Рынок ходят только купцы');
     const wantOn = !!d.onMarket;
-    if (state.config.travelOnlyInWinter && season(state) !== 'winter') {
-      return fail('Переправиться можно только Зимой, когда море открыто');
+    if (!E.travelOpen(state)) {
+      const open = (state.config.travelSeasons || []).map((s) => R.SEASON_LABELS[s]).join(' и ');
+      return fail(`Море закрыто. Переправиться можно только в такие сезоны: ${open}`);
     }
     p.onMarket = wantOn;
     E.pushTx(state, { kind: 'market_move', fromId: p.id, note: wantOn ? 'отправился на Рынок' : 'вернулся с Рынка' });
@@ -894,8 +929,8 @@ const PLAYER_ACTIONS = {
     if (!running(state)) return fail('игра не идёт');
     if (p.role !== 'merchant') return fail('продавать системе может только купец');
     if (!p.onMarket) return fail('вы должны находиться на Рынке');
-    if (state.config.marketClosedInWinter && season(state) === 'winter') {
-      return fail('Зимой Рынок закрыт: продажа системе недоступна');
+    if (!E.marketOpen(state)) {
+      return fail(`Рынок закрыт (${R.SEASON_LABELS[season(state)]}): продажа системе недоступна`);
     }
     const crop = d.crop;
     if (!R.CROPS.includes(crop)) return fail('неизвестная культура');
@@ -1069,6 +1104,17 @@ const PLAYER_ACTIONS = {
     if (target.role === 'boyar' && target.protectedUntilYear >= state.time.year) {
       return fail(`боярин защищён от разжалования до ${target.protectedUntilYear + 1}-го года`);
     }
+    if (target.role === 'boyar') {
+      const limit = Math.max(0, Math.floor(Number(state.config.boyarDismissPerSeason) || 0));
+      const key = E.seasonKey(state);
+      if (!state.boyarDismiss || state.boyarDismiss.seasonKey !== key) {
+        state.boyarDismiss = { seasonKey: key, count: 0 };
+      }
+      if (state.boyarDismiss.count >= limit) {
+        return fail(`в один сезон можно разжаловать не больше ${limit} боярина — подождите следующего сезона`);
+      }
+      state.boyarDismiss.count += 1;
+    }
     const wasRole = target.role;
     if (wasRole === 'boyar' && toRole === 'peasant') {
       changeRole(state, target, 'peasant');
@@ -1147,9 +1193,32 @@ const PLAYER_ACTIONS = {
   },
 };
 
+/** Действия, доступные даже когда игрок заблокирован выборами царя. */
+const ELECTION_ALLOWED = new Set(['voteElection', 'readNotifications', 'setName']);
+
+/**
+ * Пока идут выборы царя, все действия заблокированы:
+ * избиратель — до того, как проголосует; кандидат — до конца выборов.
+ */
+function electionBlockReason(state, player) {
+  const el = state.election;
+  if (!el || el.status !== 'voting') return null;
+  if (el.candidates.includes(player.id)) {
+    return 'Идут выборы царя, и вы кандидат — дождитесь результата';
+  }
+  if (!el.votes[player.id]) {
+    return 'Идут выборы царя — сначала проголосуйте за нового царя';
+  }
+  return null;
+}
+
 function handlePlayerAction(state, player, type, data) {
   const handler = PLAYER_ACTIONS[type];
   if (!handler) return fail(`неизвестное действие: ${type}`);
+  if (!ELECTION_ALLOWED.has(type)) {
+    const blocked = electionBlockReason(state, player);
+    if (blocked) return fail(blocked);
+  }
   try {
     return handler(state, player, data || {}) || { ok: true };
   } catch (e) {
@@ -1160,6 +1229,7 @@ function handlePlayerAction(state, player, type, data) {
 module.exports = {
   STATE_OWNER,
   handlePlayerAction,
+  electionBlockReason,
   PLAYER_ACTIONS,
   normBundle,
   resolvePlotCount,

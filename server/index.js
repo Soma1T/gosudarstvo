@@ -29,9 +29,15 @@ if (loaded && loaded.players) {
     state.config = Object.assign(R.defaultConfig(), loaded.config || {});
     state.config.marketRates = Object.assign(R.defaultConfig().marketRates, (loaded.config || {}).marketRates || {});
     state.config.marketQuotas = Object.assign(R.defaultConfig().marketQuotas, (loaded.config || {}).marketQuotas || {});
-    state.config.scoring = Object.assign(R.defaultConfig().scoring, (loaded.config || {}).scoring || {});
+    // старые сохранения: булевы флаги сезонов заменены списками сезонов
+    if (!Array.isArray(state.config.travelSeasons)) state.config.travelSeasons = R.defaultConfig().travelSeasons;
+    if (!Array.isArray(state.config.marketOpenSeasons)) state.config.marketOpenSeasons = R.defaultConfig().marketOpenSeasons;
+    delete state.config.travelOnlyInWinter;
+    delete state.config.marketClosedInWinter;
+    delete state.config.scoring;
     state.stateCrops = Object.assign(R.emptyCrops(), loaded.stateCrops || {});
     state.market = Object.assign({ quotaUsed: R.emptyCrops() }, loaded.market || {});
+    state.boyarDismiss = loaded.boyarDismiss || { seasonKey: null, count: 0 };
     for (const p of Object.values(state.players)) {
       p.connected = false;
       p.sanctions = Object.assign({ noBoat: false, noTrade: false, noFarm: false, notes: '' }, p.sanctions || {});

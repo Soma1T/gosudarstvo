@@ -34,6 +34,7 @@ function createState() {
     election: null,
     overthrow: null,
     complaints: [],
+    boyarDismiss: { seasonKey: null, count: 0 },
     transactions: [],
     feed: [],
     results: null,
@@ -112,6 +113,22 @@ function seasonKey(state) {
 
 function seasonName(state) {
   return R.SEASON_LABELS[R.SEASONS[state.time.seasonIndex]];
+}
+
+function currentSeason(state) {
+  return R.SEASONS[state.time.seasonIndex];
+}
+
+/** Открыто ли море: купец может отплыть на Рынок или вернуться. */
+function travelOpen(state) {
+  const list = state.config.travelSeasons || [];
+  return list.includes(currentSeason(state));
+}
+
+/** Работает ли Рынок: можно ли продавать культуры системе. */
+function marketOpen(state) {
+  const list = state.config.marketOpenSeasons || [];
+  return list.includes(currentSeason(state));
 }
 
 function pushFeed(state, text, kind = 'info') {
@@ -315,9 +332,12 @@ function advanceSeason(state, { byMaster = false } = {}) {
   const season = R.SEASONS[t.seasonIndex];
   pushFeed(state, `Наступил сезон: ${R.SEASON_LABELS[season]} (год ${t.year}).`, 'phase');
 
-  if (season === 'autumn') runHarvest(state, { byMaster });
-  if (season === 'winter') pushFeed(state, 'Зима: море открыто, купцы могут отправиться на Рынок. Продажа системе недоступна.', 'phase');
-  if (season === 'spring') pushFeed(state, 'Весна: крестьяне могут сажать культуры.', 'phase');
+  if (season === 'autumn') {
+    runHarvest(state, { byMaster });
+    pushFeed(state, 'Осень: море открыто (купцы могут отплыть или вернуться), Рынок больше не принимает культуры.', 'phase');
+  }
+  if (season === 'winter') pushFeed(state, 'Зима: море открыто, Рынок закрыт для продажи системе. Торговля на материке.', 'phase');
+  if (season === 'spring') pushFeed(state, 'Весна: крестьяне могут сажать культуры, Рынок снова принимает культуры.', 'phase');
 
   if (!t.paused) t.seasonEndsAt = Date.now() + seasonDurationMs(state);
   else t.remainingMs = seasonDurationMs(state);
@@ -341,21 +361,7 @@ function tick(state) {
 
 /* ------------------------------------------------------------------- итоги */
 
-function cropPrice(state, crop) {
-  const s = state.config.scoring;
-  if (s.cropValueFromMarket) return Number(state.config.marketRates[crop]) || 0;
-  return Number(s.cropValue) || 0;
-}
-
-function playerWealth(state, player) {
-  const s = state.config.scoring;
-  let wealth = player.money;
-  for (const c of R.CROPS) wealth += (player.crops[c] || 0) * cropPrice(state, c);
-  wealth += plotsOf(state, player.id).length * (Number(s.plotValue) || 0);
-  if (player.hasBoat) wealth += Number(s.boatValue) || 0;
-  return Math.round(wealth);
-}
-
+/** Итоги считаются ТОЛЬКО по личным монетам. */
 function computeResults(state) {
   const rows = playerList(state)
     .map((p) => ({
@@ -366,9 +372,8 @@ function computeResults(state) {
       crops: { ...p.crops },
       plots: plotsOf(state, p.id).length,
       hasBoat: p.hasBoat,
-      wealth: playerWealth(state, p),
     }))
-    .sort((a, b) => b.wealth - a.wealth);
+    .sort((a, b) => b.money - a.money);
   return { at: Date.now(), treasury: state.treasury, rows };
 }
 
@@ -394,6 +399,7 @@ module.exports = {
   totalCrops,
   seasonKey,
   seasonName,
+  currentSeason,
   pushFeed,
   pushTx,
   notify,
@@ -408,7 +414,8 @@ module.exports = {
   advanceSeason,
   resetYearTaxes,
   tick,
-  playerWealth,
+  travelOpen,
+  marketOpen,
   computeResults,
   finishGame,
 };

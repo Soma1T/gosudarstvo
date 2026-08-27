@@ -23,6 +23,29 @@ function check(name, cond, extra = '') {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** Ждёт, пока сервер начнёт принимать соединения. */
+async function waitForServer(timeoutMs = 20000) {
+  const net = require('net');
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const up = await new Promise((resolve) => {
+      const sock = net.connect(PORT, '127.0.0.1');
+      sock.once('connect', () => {
+        sock.destroy();
+        resolve(true);
+      });
+      sock.once('error', () => resolve(false));
+      setTimeout(() => {
+        sock.destroy();
+        resolve(false);
+      }, 800);
+    });
+    if (up) return true;
+    await sleep(300);
+  }
+  return false;
+}
+
 class Client {
   constructor(label) {
     this.label = label;
@@ -73,7 +96,11 @@ async function main() {
   let serverLog = '';
   server.stdout.on('data', (d) => (serverLog += d));
   server.stderr.on('data', (d) => (serverLog += d));
-  await sleep(1200);
+  if (!(await waitForServer())) {
+    console.error('Сервер не запустился. Лог:\n' + serverLog);
+    process.exit(1);
+  }
+  await sleep(300);
 
   try {
     console.log('\n[1] Подключение мастера и игроков');
@@ -174,17 +201,23 @@ async function main() {
     check('годовой лимит культур (1) исчерпан', /лимит/i.test(feudalC.lastError() || ''), feudalC.lastError());
 
     console.log('\n[6] Рынок и купец');
+    check('курс скрыт от крестьянина', !peasantC.state.market.rates);
+    check('курс скрыт от царя', !tsarC.state.market.rates);
+    check('курс скрыт от боярина', !boyarC.state.market.rates);
     if (merchantC) {
+      check('курс скрыт от купца на материке', !merchantC.state.market.rates);
       merchantC.act('setMarketPresence', { onMarket: true });
       await sleep(250);
       check('зимой купец отправился на Рынок', master.state.players.find((p) => p.id === merchantC.state.me.id).onMarket);
+      check('на закрытом Рынке курс всё ещё скрыт', !merchantC.state.market.rates);
       master.mact('addCrops', { playerId: merchantC.state.me.id, crops: { beet: 10 } });
-      await sleep(200);
-      merchantC.act('sellToMarket', { crop: 'beet', qty: 3 });
-      await sleep(200);
-      check('зимой продажа системе закрыта', /Зимой/.test(merchantC.lastError() || ''), merchantC.lastError());
-      master.mact('setTime', { year: 2, seasonIndex: 0 });
       await sleep(250);
+      merchantC.act('sellToMarket', { crop: 'beet', qty: 3 });
+      await sleep(300);
+      check('зимой продажа системе закрыта', /Рынок закрыт/.test(merchantC.lastError() || ''), merchantC.lastError());
+      master.mact('setTime', { year: 2, seasonIndex: 0 });
+      await sleep(350);
+      check('на открытом Рынке купец видит курс и квоты', !!merchantC.state.market.rates && !!merchantC.state.market.quotaLeft);
       const before = master.state.players.find((p) => p.id === merchantC.state.me.id).money;
       merchantC.act('sellToMarket', { crop: 'beet', qty: 3 });
       await sleep(250);
@@ -220,6 +253,17 @@ async function main() {
       const me1 = master.state.players.find((p) => p.id === peasantId);
       check('сделка исполнена после подтверждения', me1.crops.pea >= 1);
     }
+
+    console.log('\n[7b] Обмен без встречного запроса — сразу передача');
+    master.mact('addCrops', { playerId: peasantId, crops: { potato: 2 } });
+    await sleep(250);
+    const potatoBefore = master.state.players.find((p) => p.id === otherPeasantId).crops.potato;
+    peasantC.act('tradeOffer', { toId: otherPeasantId, give: { crops: { potato: 1 } }, want: {} });
+    await sleep(300);
+    check(
+      'без встречного запроса передача проходит сразу',
+      master.state.players.find((p) => p.id === otherPeasantId).crops.potato === potatoBefore + 1,
+    );
 
     console.log('\n[8] Лодка → купец');
     master.mact('addMoney', { playerId: peasantId, delta: 100 });
@@ -268,11 +312,21 @@ async function main() {
     const serf = master.state.players.find((p) => p.role === 'peasant' && p.lordId);
     if (serf) {
       const serfC = cl(serf.id);
+      const lordId = serf.lordId;
       master.mact('addMoney', { playerId: serf.id, delta: 50 });
-      await sleep(200);
+      master.mact('addPlots', { playerId: serf.id, count: 2 });
+      await sleep(300);
+      const serfPlots = master.state.players.find((p) => p.id === serf.id).plots.length;
+      const lordPlotsBefore = master.state.players.find((p) => p.id === lordId).plots.length;
       serfC.act('ransom');
-      await sleep(250);
+      await sleep(300);
       check('крестьянин выкупился (стал вольным)', master.state.players.find((p) => p.id === serf.id).lordId === null);
+      check('после выкупа у него не осталось участков', master.state.players.find((p) => p.id === serf.id).plots.length === 0);
+      check(
+        `все ${serfPlots} участков перешли феодалу`,
+        master.state.players.find((p) => p.id === lordId).plots.length === lordPlotsBefore + serfPlots,
+        `у феодала ${master.state.players.find((p) => p.id === lordId).plots.length}, было ${lordPlotsBefore}`,
+      );
     }
     const freeP = master.state.players.find((p) => p.role === 'peasant' && !p.lordId);
     if (freeP) {
@@ -291,6 +345,32 @@ async function main() {
     await sleep(250);
     check('выплата из казны', master.state.treasury === 200, `казна ${master.state.treasury}`);
 
+    console.log('\n[11b] Разжалование бояр: не больше одного за сезон');
+    const toBoyars = master.state.players.filter((p) => p.role === 'peasant').slice(0, 2);
+    for (const b of toBoyars) master.mact('setPlayerRole', { playerId: b.id, role: 'boyar' });
+    await sleep(400);
+    const freshBoyars = master.state.players.filter((p) => p.role === 'boyar' && p.protectedUntilYear < master.state.time.year);
+    if (freshBoyars.length >= 2) {
+      tsarC.act('dismiss', { playerId: freshBoyars[0].id, toRole: 'feudal' });
+      await sleep(300);
+      check('первое разжалование боярина прошло', master.state.players.find((p) => p.id === freshBoyars[0].id).role === 'feudal');
+      tsarC.act('dismiss', { playerId: freshBoyars[1].id, toRole: 'feudal' });
+      await sleep(300);
+      check('второе разжалование в том же сезоне запрещено', /сезон/.test(tsarC.lastError() || ''), tsarC.lastError());
+      master.mact('nextSeason');
+      await sleep(400);
+      tsarC.act('dismiss', { playerId: freshBoyars[1].id, toRole: 'feudal' });
+      await sleep(300);
+      check('в новом сезоне разжалование снова доступно', master.state.players.find((p) => p.id === freshBoyars[1].id).role === 'feudal');
+    } else {
+      console.log('  (не удалось получить двух бояр — пропуск)');
+    }
+    // восстанавливаем бояр для проверки свержения
+    const restore = master.state.players.filter((p) => ['feudal', 'peasant'].includes(p.role)).slice(0, 2);
+    for (const b of restore) master.mact('setPlayerRole', { playerId: b.id, role: 'boyar' });
+    await sleep(400);
+    check('бояре восстановлены для следующей проверки', master.state.players.filter((p) => p.role === 'boyar').length >= 1);
+
     console.log('\n[12] Свержение царя и выборы');
     const oldTsarId = master.state.players.find((p) => p.role === 'tsar').id;
     const boyarList = master.state.players.filter((p) => p.role === 'boyar');
@@ -305,14 +385,22 @@ async function main() {
     check('царь свергнут и стал крестьянином', master.state.players.find((p) => p.id === oldTsarId).role === 'peasant');
     check('начались выборы', master.state.election && master.state.election.status === 'voting');
     if (master.state.election) {
+      // на время выборов остальные действия должны быть заблокированы
+      const voterList = master.state.players.filter((p) => !master.state.election.candidates.some((c) => c.id === p.id));
+      const blockedC = voterList.map((v) => cl(v.id)).find((x) => x);
+      if (blockedC) {
+        blockedC.act('transfer', { toId: oldTsarId, money: 1 });
+        await sleep(300);
+        check('до голосования все действия заблокированы', /выборы/i.test(blockedC.lastError() || ''), blockedC.lastError());
+      }
       const cand = master.state.election.candidates[0];
-      const voters = master.state.players.filter((p) => !master.state.election.candidates.some((c) => c.id === p.id));
-      for (const v of voters) {
+      for (const v of voterList) {
         const vc = cl(v.id);
         if (vc) vc.act('voteElection', { candidateId: cand.id });
       }
-      await sleep(500);
+      await sleep(600);
       check('избран новый царь', master.state.players.filter((p) => p.role === 'tsar').length === 1);
+      check('выборы закрыты', !master.state.election || master.state.election.status !== 'voting');
     }
 
     console.log('\n[13] Мастер: ручное управление');
@@ -341,8 +429,9 @@ async function main() {
     check('фаза finished', master.state.phase === 'finished');
     check('итоги посчитаны и отсортированы', master.state.results && master.state.results.rows.length > 0);
     check(
-      'богатство считается по убыванию',
-      master.state.results.rows.every((r, i, a) => i === 0 || a[i - 1].wealth >= r.wealth),
+      'итоги считаются только по личным монетам, по убыванию',
+      master.state.results.rows.every((r, i, a) => i === 0 || a[i - 1].money >= r.money) &&
+        master.state.results.rows.every((r) => r.wealth === undefined),
     );
 
     console.log('\n[15] Автосохранение и восстановление');
@@ -354,7 +443,8 @@ async function main() {
       env: { ...process.env, PORT: String(PORT), MASTER_PIN: PIN },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    await sleep(1400);
+    await waitForServer();
+    await sleep(400);
     const m2 = new Client('master2');
     await m2.connect();
     m2.send({ type: 'auth_master', pin: PIN });
