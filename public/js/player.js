@@ -7,7 +7,6 @@ const TOKEN_KEY = 'gos_token';
 const ui = {
   tab: 'home',
   sel: {},          // выбранные цели действий по контекстам
-  tradeMode: 'give',
   joinPhase: 'lobby',
   authState: 'connecting', // connecting | join | ready | kicked
   lastError: '',
@@ -153,6 +152,8 @@ function render() {
   if (!S || !me) return renderSplash('Подключение к сессии…');
   if (S.phase === 'lobby') return renderShell(renderLobby());
   if (S.phase === 'finished') return renderShell(renderResults());
+  // Пока идут выборы царя, остальные действия недоступны.
+  if (S.electionBlock) return renderShell(renderElectionGate(), { noTabs: true });
   return renderShell(renderTabContent());
 }
 
@@ -216,10 +217,10 @@ const TABS = [
   { id: 'role', ic: '⚙️', label: 'Действия' },
   { id: 'trade', ic: '🤝', label: 'Обмен' },
   { id: 'politics', ic: '📜', label: 'Политика' },
-  { id: 'log', ic: '📖', label: 'Журнал' },
+  { id: 'rules', ic: '📕', label: 'Правила' },
 ];
 
-function renderShell(inner) {
+function renderShell(inner, { noTabs = false } = {}) {
   const unread = (me.notifications || []).filter((n) => !n.read).length;
   const pending = (S.requests || []).filter(
     (r) => r.status === 'pending' && (r.approvals[me.id] === 'pending' || (r.needBoyar && me.role === 'boyar' && !r.boyarVote)),
@@ -249,7 +250,7 @@ function renderShell(inner) {
       <div class="section">${inner}</div>
     </div>
     ${
-      S.phase === 'running'
+      S.phase === 'running' && !noTabs
         ? `<div class="tabs">${TABS.map(
             (t) => `<button class="${ui.tab === t.id ? 'on' : ''}" data-tab="${t.id}">
               <span class="ic">${t.ic}</span>${t.label}${badgeFor(t.id)}</button>`,
@@ -296,6 +297,37 @@ function renderLobby() {
     ${feedCard(8)}`;
 }
 
+/* --------------------------------------------------- выборы: блокировка */
+
+function renderElectionGate() {
+  const el = S.election;
+  if (!el) return '<div class="card center"><h2>Выборы царя</h2></div>';
+  const isCandidate = el.candidates.some((c) => c.id === me.id);
+  return `<div class="card center">
+      <div style="font-size:44px">🗳️</div>
+      <h2>Выборы царя</h2>
+      <p class="small" style="color:var(--gold2)">${C.esc(S.electionBlock)}</p>
+      <p class="tiny muted mb0">Проголосовало ${el.votedCount} из ${el.voterCount}. Остальные действия заблокированы.</p>
+    </div>
+    <div class="card">
+      <div class="card-title"><h3>Кандидаты</h3></div>
+      ${
+        isCandidate
+          ? '<p class="small muted">Вы кандидат на престол — кандидаты не голосуют. Дождитесь результата выборов.</p>'
+          : '<p class="small muted">Выберите нового царя, чтобы продолжить игру.</p>'
+      }
+      <div class="list">${el.candidates
+        .map(
+          (c) => `<div class="item"><div class="spread">
+            <span><b>${C.esc(c.name)}</b> ${C.roleBadge(c.role)} <span class="tiny muted">голосов: ${c.votes}</span></span>
+            ${isCandidate ? '' : `<button class="sm" data-act="voteElection" data-id="${c.id}">Голосовать</button>`}
+          </div></div>`,
+        )
+        .join('')}</div>
+    </div>
+    ${feedCard(6)}`;
+}
+
 /* -------------------------------------------------------------- итоги */
 
 function renderResults() {
@@ -306,17 +338,17 @@ function renderResults() {
       <div style="font-size:40px">🏁</div>
       <h2>Игра завершена</h2>
       <p class="muted small">Государственная казна: <b>${r.treasury}</b> монет</p>
-      ${mine >= 0 ? `<p>Ваше место: <b>${mine + 1}</b> из ${r.rows.length}. Богатство: <b>${r.rows[mine].wealth}</b></p>` : ''}
+      ${mine >= 0 ? `<p>Ваше место: <b>${mine + 1}</b> из ${r.rows.length}. Личные монеты: <b>${r.rows[mine].money}</b></p>` : ''}
     </div>
     <div class="card">
-      <div class="card-title"><h3>Личное богатство</h3></div>
+      <div class="card-title"><h3>Личные монеты</h3><span class="tiny muted">только монеты идут в зачёт</span></div>
       <div class="scroll-x"><table>
-        <tr><th>#</th><th>Игрок</th><th>Роль</th><th>💰</th><th>Участки</th><th>Итого</th></tr>
+        <tr><th>#</th><th>Игрок</th><th>Роль</th><th>Монеты</th></tr>
         ${r.rows
           .map(
             (row, i) => `<tr${row.id === me.id ? ' style="color:var(--gold2)"' : ''}>
             <td>${i + 1}</td><td>${C.esc(row.name)}</td><td class="tiny">${C.ROLE_LABELS[row.role] || '—'}</td>
-            <td class="mono">${row.money}</td><td class="mono">${row.plots}</td><td class="mono"><b>${row.wealth}</b></td></tr>`,
+            <td class="mono"><b>${row.money}</b></td></tr>`,
           )
           .join('')}
       </table></div>
@@ -334,8 +366,8 @@ function renderTabContent() {
       return renderTradeTab();
     case 'politics':
       return renderPoliticsTab();
-    case 'log':
-      return renderLogTab();
+    case 'rules':
+      return renderRulesTab();
     default:
       return renderHome();
   }
@@ -357,10 +389,10 @@ const SEASON_HINTS = {
     winter: 'Зима — торговля на материке.',
   },
   merchant: {
-    spring: 'Весна — Рынок работает: можно продавать системе, если вы на Рынке.',
-    summer: 'Лето — Рынок работает: можно продавать системе, если вы на Рынке.',
-    autumn: 'Осень — Рынок работает: можно продавать системе, если вы на Рынке.',
-    winter: 'Зима — море открыто: можно переправиться на Рынок или вернуться. Продажа системе закрыта.',
+    spring: 'Весна — Рынок принимает культуры: можно продавать системе, если вы на Рынке. Море закрыто.',
+    summer: 'Лето — Рынок принимает культуры: можно продавать системе, если вы на Рынке. Море закрыто.',
+    autumn: 'Осень — море открыто: можно отплыть на Рынок или вернуться. Рынок культуры не принимает.',
+    winter: 'Зима — море открыто: можно отплыть на Рынок или вернуться. Рынок культуры не принимает.',
   },
   boyar: {
     spring: 'Весна — продавайте лодки, следите за указами.',
@@ -388,10 +420,9 @@ function renderHome() {
         <h2 style="margin:0">${C.ROLE_ICONS[me.role] || ''} ${C.ROLE_LABELS[me.role] || 'Без роли'}</h2>
         ${me.role === 'merchant' ? `<span class="badge ${me.onMarket ? 'green' : 'off'}">${me.onMarket ? 'на Рынке' : 'на материке'}</span>` : ''}
       </div>
-      <div class="grid g3">
+      <div class="grid g2">
         <div class="stat"><div class="v">${me.money}</div><div class="k">монет</div></div>
         <div class="stat"><div class="v">${myPlots().length}</div><div class="k">участков</div></div>
-        <div class="stat"><div class="v">${me.wealth}</div><div class="k">богатство</div></div>
       </div>
       <div class="grid g4 mt">
         ${C.CROPS.map(
@@ -491,7 +522,8 @@ function peasantPanel() {
   const feudals = playersOfRole('feudal').filter((f) => f.id !== me.lordId);
   const boyarsList = playersOfRole('boyar');
 
-  return `<div class="card">
+  return `${plotsVisual()}
+    <div class="card">
       <div class="card-title"><h3>🌱 Посадка</h3><span class="tiny muted">свободных участков: ${free}</span></div>
       ${
         canPlant
@@ -538,6 +570,7 @@ function peasantPanel() {
         ? `<div class="card">
             <div class="card-title"><h3>🔓 Выкуп из зависимости</h3><span class="tiny muted">${S.config.ransomPrice} монет</span></div>
             <p class="small muted">Ваш феодал: <b>${C.esc(me.lordName)}</b>. После выкупа вы станете вольным крестьянином.</p>
+            <p class="small" style="color:var(--gold2)">⚠ Все ваши участки (${myPlots().length}) останутся феодалу — землю придётся получать заново.</p>
             <button class="wide" data-act="ransom" ${me.money >= S.config.ransomPrice ? '' : 'disabled'}>
               ${me.money >= S.config.ransomPrice ? `Выкупиться за ${S.config.ransomPrice}` : `Не хватает ${S.config.ransomPrice - me.money} монет`}
             </button>
@@ -566,6 +599,30 @@ function peasantPanel() {
           </div>`
     }
     ${taxInfoCard()}`;
+}
+
+/** Наглядная карта участков крестьянина: прямоугольники с посаженной культурой. */
+function plotsVisual() {
+  const plots = myPlots();
+  const planted = plots.filter((p) => p.planted).length;
+  return `<div class="card">
+      <div class="card-title"><h3>🟩 Мои участки</h3>
+        <span class="tiny muted">${plots.length ? `засеяно ${planted} из ${plots.length}` : 'участков нет'}</span></div>
+      ${
+        plots.length
+          ? `<div class="plot-map">${plots
+              .map(
+                (p) => `<div class="plot-cell ${p.planted ? 'sown' : ''}">
+                  <div class="plot-cell-id">${p.id}</div>
+                  <div class="plot-cell-ico">${p.planted ? C.CROP_ICONS[p.planted] : '·'}</div>
+                  <div class="plot-cell-name">${p.planted ? C.CROP_LABELS[p.planted] : 'пусто'}</div>
+                </div>`,
+              )
+              .join('')}</div>
+             <p class="tiny muted mt mb0">Осенью каждая посадка даёт ${S.config.harvestYield} культуры, участок снова становится пустым.</p>`
+          : '<p class="small muted mb0">У вас нет участков. Получить их можно от феодала или царя.</p>'
+      }
+    </div>`;
 }
 
 function taxInfoCard() {
@@ -656,10 +713,13 @@ function taxCollectCard(title, wards, sel) {
 function merchantPanel() {
   const m = S.market;
   const canTravel = m.travelOpen;
+  const travelSeasons = (S.config.travelSeasons || []).map((s) => C.SEASON_LABELS[s]).join(' и ');
+  const marketSeasons = (S.config.marketOpenSeasons || []).map((s) => C.SEASON_LABELS[s]).join(' и ');
   return `<div class="card">
       <div class="card-title"><h3>⛵ Статус</h3>
         <span class="badge ${me.onMarket ? 'green' : 'off'}">${me.onMarket ? 'на Рынке' : 'на материке'}</span></div>
-      <p class="small muted">Переправа через море открыта только Зимой. Пока вы на Рынке, обмениваться с вами могут только купцы, которые тоже на Рынке.</p>
+      <p class="small muted">Море открыто ${travelSeasons} — только в эти сезоны можно отплыть на Рынок или вернуться.
+        Пока вы на Рынке, обмениваться с вами могут только купцы, которые тоже на Рынке.</p>
       <button class="wide ${me.onMarket ? 'ghost' : ''}" data-act="toggleMarket" ${canTravel ? '' : 'disabled'}>
         ${canTravel ? (me.onMarket ? 'Вернуться на материк' : 'Отправиться на Рынок') : `Море закрыто (сейчас ${C.SEASON_LABELS[season()]})`}
       </button>
@@ -668,12 +728,12 @@ function merchantPanel() {
 
     <div class="card">
       <div class="card-title"><h3>🏪 Продажа системе</h3>
-        <span class="badge ${m.open ? 'green' : 'red'}">${m.open ? 'Рынок открыт' : 'Рынок закрыт'}</span></div>
+        <span class="badge ${m.open ? 'green' : 'red'}">${m.open ? 'Рынок принимает' : 'Рынок закрыт'}</span></div>
       ${
         !me.onMarket
-          ? '<p class="small muted mb0">Чтобы продавать, нужно физически находиться в зоне Рынка и иметь статус «на Рынке».</p>'
+          ? `<p class="small muted mb0">Курс и квоты видны только на Рынке. Чтобы узнать их и продавать, нужно физически быть в зоне Рынка и иметь статус «на Рынке» (отплыть можно ${travelSeasons}).</p>`
           : !m.open
-            ? '<p class="small muted mb0">Зимой продажа системе недоступна. Можно торговать с другими купцами на Рынке.</p>'
+            ? `<p class="small muted mb0">Сейчас ${C.SEASON_LABELS[season()]} — Рынок культуры не принимает, курс скрыт. Рынок работает ${marketSeasons}: дождитесь открытия, оставаясь на Рынке. Пока можно торговать с другими купцами на Рынке.</p>`
             : `<div class="list">${C.CROPS.map(
                 (c) => `<div class="item">
                   <div class="spread">
@@ -777,7 +837,9 @@ function tsarPanel() {
         <button class="ghost" data-act="dismiss" data-role="feudal">Разжаловать в феодалы</button>
         <button class="danger" data-act="dismiss" data-role="peasant">Разжаловать в крестьяне</button>
       </div>
-      <p class="tiny muted mt mb0">Боярин → крестьянин: получает стандартный набор, личные ресурсы конфискуются в казну. Феодал → крестьянин: сохраняет ресурсы, его крестьяне становятся вольными.</p>
+      <p class="tiny muted mt mb0">Разжаловать боярина можно ${S.config.boyarDismissPerSeason} раз в сезон${
+        S.boyarDismiss ? ` (в этом сезоне осталось: ${S.boyarDismiss.left})` : ''
+      }. Боярин → крестьянин: стандартный набор, личное конфискуется в казну. Феодал → крестьянин: ресурсы сохраняет, его крестьяне становятся вольными.</p>
     </div>
 
     ${decreeFormCard()}
@@ -846,7 +908,8 @@ function renderTradeTab() {
   const list = others();
   const groups = ['tsar', 'boyar', 'feudal', 'merchant', 'peasant'];
 
-  return `<div class="card">
+  return `${myStockCard()}
+    <div class="card">
       <div class="card-title"><h3>🤝 С кем обмен</h3>${target ? `<button class="sm ghost" onclick="gosSel('trade','')">Сменить</button>` : ''}</div>
       ${
         target
@@ -876,18 +939,26 @@ function renderTradeTab() {
       }
     </div>
 
-    ${
-      target && !tradeBlocked(target)
-        ? `<div class="card">
-            <div class="row" style="margin-bottom:10px">
-              <button class="sm ${ui.tradeMode === 'give' ? '' : 'ghost'} grow" onclick="gosMode('give')">Просто передать</button>
-              <button class="sm ${ui.tradeMode === 'offer' ? '' : 'ghost'} grow" onclick="gosMode('offer')">Предложить сделку</button>
-            </div>
-            ${ui.tradeMode === 'give' ? giveForm(target) : offerForm(target)}
-          </div>`
-        : ''
-    }
+    ${target && !tradeBlocked(target) ? `<div class="card">${offerForm(target)}</div>` : ''}
     ${requestsCard(false)}`;
+}
+
+/** Мои личные запасы — подсказка на экране обмена. */
+function myStockCard() {
+  return `<div class="card tight">
+      <div class="card-title" style="margin-bottom:6px"><h3>🎒 Мои запасы</h3>
+        <span class="tiny muted">только личное имущество</span></div>
+      <div class="grid g3">
+        <div class="stat"><div class="v">${me.money}</div><div class="k">💰 монет</div></div>
+        <div class="stat"><div class="v">${myPlots().length}</div><div class="k">🟩 участков</div></div>
+        <div class="stat"><div class="v">${me.hasBoat ? '🛶' : '—'}</div><div class="k">лодка</div></div>
+      </div>
+      <div class="grid g4 mt">
+        ${C.CROPS.map(
+          (c) => `<div class="stat"><div class="v">${me.crops[c] || 0}</div><div class="k">${C.CROP_ICONS[c]} ${C.CROP_LABELS[c]}</div></div>`,
+        ).join('')}
+      </div>
+    </div>`;
 }
 
 function bundleFields(prefix, { withPlots = true, plotMax = 0, title = '' } = {}) {
@@ -902,22 +973,16 @@ function bundleFields(prefix, { withPlots = true, plotMax = 0, title = '' } = {}
     }`;
 }
 
-function giveForm(target) {
-  const canGetPlots = ['peasant', 'feudal', 'tsar'].includes(target.role);
-  return `<p class="small muted">Передача без подтверждения — ресурсы уйдут сразу.</p>
-    ${bundleFields('give', { withPlots: canGetPlots && myPlots().length > 0, plotMax: myPlots().length })}
-    ${!canGetPlots ? `<p class="tiny muted">${C.ROLE_LABELS[target.role]} не может владеть землёй — участки передать нельзя.</p>` : ''}
-    <button class="wide mt" data-act="transfer" data-id="${target.id}">Передать ${C.esc(target.name)}</button>`;
-}
-
 function offerForm(target) {
   const canGetPlots = ['peasant', 'feudal', 'tsar'].includes(target.role);
   const iCanGetPlots = ['peasant', 'feudal', 'tsar'].includes(me.role);
   const targetHasPlots = ['peasant', 'feudal', 'tsar'].includes(target.role) && (target.plotsCount || 0) > 0;
-  return `<p class="small muted">Сделка выполнится только после подтверждения второй стороной.</p>
+  return `<p class="small muted">Заполните, что отдаёте и что просите взамен.
+      Если <b>ничего не просите</b> — это просто передача, она пройдёт сразу и без подтверждения.</p>
     ${bundleFields('og', { withPlots: canGetPlots && myPlots().length > 0, plotMax: myPlots().length, title: 'Вы отдаёте' })}
+    ${!canGetPlots ? `<p class="tiny muted">${C.ROLE_LABELS[target.role]} не может владеть землёй — участки передать нельзя.</p>` : ''}
     <hr>
-    <h4 style="font-size:13px;color:var(--gold2)">Вы просите</h4>
+    <h4 style="font-size:13px;color:var(--gold2)">Вы просите взамен</h4>
     <div class="field"><label>💰 Монеты</label><input type="number" min="0" id="owMoney" placeholder="0" inputmode="numeric"></div>
     ${C.cropInputs('owc')}
     ${
@@ -926,7 +991,7 @@ function offerForm(target) {
             <input type="number" min="0" max="${target.plotsCount}" id="owPlots" placeholder="0" inputmode="numeric"></div>`
         : ''
     }
-    <button class="wide mt" data-act="tradeOffer" data-id="${target.id}">Отправить предложение</button>`;
+    <button class="wide mt" data-act="tradeOffer" data-id="${target.id}">Обменяться с ${C.esc(target.name)}</button>`;
 }
 
 function requestsCard(onlyMine) {
@@ -1071,79 +1136,171 @@ function renderPoliticsTab() {
     }
   </div>
 
-  <div class="card">
-    <div class="card-title"><h3>📊 Текущие параметры</h3></div>
-    <div class="scroll-x"><table>
-      <tr><td>Цена лодки</td><td class="mono">${S.config.boatPrice}</td></tr>
-      <tr><td>Цена выкупа</td><td class="mono">${S.config.ransomPrice}</td></tr>
-      <tr><td>Лимит налога феодала (год)</td><td class="mono">${S.config.feudalTaxCropsPerYear} 🌾 + ${S.config.feudalTaxMoneyPerYear} 💰</td></tr>
-      <tr><td>Лимит налога царя (год)</td><td class="mono">${S.config.tsarTaxCropsPerYear} 🌾 + ${S.config.tsarTaxMoneyPerYear} 💰</td></tr>
-      <tr><td>Налог вольных крестьян</td><td class="mono">${S.config.freePeasantTaxEnabled ? `${S.config.freeTaxCropsPerYear} 🌾 + ${S.config.freeTaxMoneyPerYear} 💰` : 'не введён'}</td></tr>
-      ${
-        me.role === 'merchant' && S.market.rates
-          ? `<tr><td>Курс культур (Рынок)</td><td class="mono">${C.CROPS.map((c) => `${C.CROP_ICONS[c]}${S.market.rates[c]}`).join(' ')}</td></tr>
-             <tr><td>Квоты (осталось)</td><td class="mono">${C.CROPS.map((c) => `${C.CROP_ICONS[c]}${S.market.quotaLeft[c]}`).join(' ')}</td></tr>`
-          : ''
-      }
-    </table></div>
-  </div>
+  ${
+    me.role === 'merchant' && S.market.rates
+      ? `<div class="card">
+          <div class="card-title"><h3>🏪 Рынок (видно только вам)</h3></div>
+          <div class="scroll-x"><table>
+            <tr><td>Курс культур</td><td class="mono">${C.CROPS.map((c) => `${C.CROP_ICONS[c]}${S.market.rates[c]}`).join(' ')}</td></tr>
+            <tr><td>Квоты (осталось)</td><td class="mono">${C.CROPS.map((c) => `${C.CROP_ICONS[c]}${S.market.quotaLeft[c]}`).join(' ')}</td></tr>
+          </table></div>
+        </div>`
+      : ''
+  }
   ${feedCard(14)}`;
 }
 
-/* --------------------------------------------------- вкладка «Журнал» */
+/* --------------------------------------------------- вкладка «Правила» */
 
-const TX_KINDS = {
-  transfer: 'Передача',
-  trade: 'Обмен',
-  tax: 'Налог',
-  harvest: 'Урожай',
-  plant: 'Посадка',
-  market_sale: 'Продажа на Рынке',
-  market_move: 'Рынок',
-  boat_sale: 'Лодка',
-  ransom: 'Выкуп',
-  patronage: 'Покровительство',
-  lord_change: 'Смена феодала',
-  treasury_pay: 'Из казны',
-  treasury_deposit: 'В казну',
-  plots_move: 'Участки',
-  standard_set: 'Стандартный набор',
-  confiscation: 'Конфискация',
-  master_transfer: 'Мастер: передача',
-  master_grant: 'Мастер: выдача',
-  master_set: 'Мастер: установка',
-};
+/** Правила для конкретной роли: цель, что можно, когда. */
+function roleRules() {
+  const cfg = S.config;
+  const travel = (cfg.travelSeasons || []).map((s) => C.SEASON_LABELS[s]).join(' и ');
+  const marketOpen = (cfg.marketOpenSeasons || []).map((s) => C.SEASON_LABELS[s]).join(' и ');
 
-function renderLogTab() {
-  const tx = S.transactions || [];
+  const common = {
+    goal: 'Собрать как можно больше <b>личных монет</b> к концу игры. В зачёт идут только монеты — культуры, участки и лодка не считаются.',
+    can: [
+      'Обмениваться с любым игроком через вкладку «Обмен»: выберите игрока, укажите что отдаёте и что просите. Если ничего не просите взамен — передача пройдёт сразу.',
+      'Пока купец находится на Рынке, обмениваться с ним могут только купцы, которые тоже на Рынке.',
+    ],
+    when: [
+      ['🌱 Весна', 'крестьяне сажают культуры; Рынок принимает культуры'],
+      ['☀️ Лето', 'время сделок и политики; Рынок принимает культуры'],
+      ['🍂 Осень', `урожай собирается сам (1 → ${cfg.harvestYield}); феодалы и царь собирают налог; море открыто; Рынок закрыт`],
+      ['❄️ Зима', 'море открыто; Рынок закрыт; торговля на материке'],
+    ],
+  };
+
+  const byRole = {
+    peasant: {
+      title: 'Вы возделываете землю — единственный, кто это может',
+      can: [
+        `<b>Сажать культуры</b> Весной: 1 культура на 1 участок. Осенью каждая посадка даёт ${cfg.harvestYield} культуры.`,
+        `<b>Выкупиться</b> у феодала за ${cfg.ransomPrice} монет и стать вольным. Внимание: <b>все ваши участки останутся феодалу</b>.`,
+        'Перейти к другому феодалу — нужны согласия обоих феодалов и подтверждение боярина.',
+        'Вольным: попросить покровительства у феодала.',
+        `<b>Купить лодку</b> у боярина за ${cfg.boatPrice} монет и стать купцом. Обратно в крестьяне вернуться нельзя, участки уйдут феодалу или царю по вашему выбору.`,
+      ],
+      pay: `Если вы принадлежите феодалу, он забирает налог — не больше ${cfg.feudalTaxCropsPerYear} культур и ${cfg.feudalTaxMoneyPerYear} монет за год.${
+        cfg.freePeasantTaxEnabled ? ` Вольные платят государству: ${cfg.freeTaxCropsPerYear} культур и ${cfg.freeTaxMoneyPerYear} монет за год (собирают бояре).` : ''
+      }`,
+      cant: ['Сажать без свободного участка и вне Весны.', 'Иметь лодку и остаться крестьянином.'],
+    },
+    feudal: {
+      title: 'Вы кормитесь налогом со своих крестьян',
+      can: [
+        `<b>Собирать налог</b> со своих крестьян: не больше ${cfg.feudalTaxCropsPerYear} культур и ${cfg.feudalTaxMoneyPerYear} монет с каждого за год, не чаще раза в сезон. Списание автоматическое.`,
+        'Брать вольных крестьян под покровительство (по их согласию) и подтверждать уход своих крестьян.',
+        'Хранить участки и передавать их крестьянам — только крестьянин может их возделывать.',
+        'Быть назначенным боярином или избранным царём.',
+      ],
+      pay: `Царь собирает налог с вас: до ${cfg.tsarTaxCropsPerYear} культур и ${cfg.tsarTaxMoneyPerYear} монет за год.`,
+      cant: ['Возделывать землю.', 'Иметь лодку.'],
+    },
+    merchant: {
+      title: 'Вы единственный источник монет в игре',
+      can: [
+        `<b>Отплыть на Рынок или вернуться</b> — только когда открыто море: ${travel}.`,
+        `<b>Продавать культуры системе</b> — только находясь на Рынке и только когда Рынок принимает: ${marketOpen}.`,
+        '<b>Курс и квоты</b> вы видите только когда вы на Рынке и Рынок открыт. Чтобы узнать курс — отплывите и дождитесь открытия Рынка, оставаясь там.',
+        'Торговать с другими игроками в любой сезон; на Рынке — только с купцами, которые тоже на Рынке.',
+      ],
+      pay: 'Налогов не платите.',
+      cant: ['Владеть землёй.', 'Покупать что-либо у системы.', 'Вернуться в крестьяне.'],
+    },
+    boyar: {
+      title: 'Вы торгуете лодками и держите царя в руках',
+      can: [
+        `<b>Продавать лодки</b> крестьянам за ${cfg.boatPrice} монет — доход идёт лично вам, запас лодок бесконечен.`,
+        'Подтверждать переход крестьянина от одного феодала к другому.',
+        'Голосовать по указам царя. Указ отклоняется, только если против <b>строго больше половины</b> бояр (при равенстве голосов указ принят).',
+        '<b>Свергать царя</b> — нужно единогласие всех бояр. После свержения проходят выборы, а участники свержения защищены от разжалования.',
+        'Жаловаться царю на нарушителей.',
+        cfg.freePeasantTaxEnabled ? 'Собирать налог с вольных крестьян в казну (указ введён).' : 'Собирать налог с вольных крестьян — если царь введёт такой указ.',
+      ],
+      pay: 'Налогов не платите.',
+      cant: ['Владеть землёй.', 'Быть купцом или крестьянином (только через разжалование).'],
+    },
+    tsar: {
+      title: 'Вы правите государством и распоряжаетесь казной',
+      can: [
+        `<b>Собирать налог с феодалов</b>: до ${cfg.tsarTaxCropsPerYear} культур и ${cfg.tsarTaxMoneyPerYear} монет с каждого за год, не чаще раза в сезон.`,
+        'Распоряжаться казной: выдавать монеты и культуры, вносить свои личные монеты.',
+        'Назначать феодалов и бояр, разжаловать их.',
+        `<b>Разжаловать боярина можно не чаще ${cfg.boyarDismissPerSeason} раза в сезон.</b> Бояре, свергавшие царя, защищены от разжалования.`,
+        'Издавать указы: менять цены и лимиты налогов, вводить персональные санкции. Бояре голосуют.',
+        'Раздавать участки из государственного фонда — возделывать их смогут только крестьяне.',
+      ],
+      pay: 'Налогов не платите, но бояре могут вас свергнуть — тогда личные монеты и культуры уйдут в казну, а вы станете крестьянином.',
+      cant: ['Возделывать землю.', 'Иметь лодку.', 'Видеть курс Рынка — его знают только купцы на Рынке.'],
+    },
+  };
+
+  return { common, role: byRole[me.role] || null };
+}
+
+function renderRulesTab() {
+  const { common, role } = roleRules();
+  const bullets = (arr) => `<ul style="padding-left:20px;margin:0">${arr.filter(Boolean).map((x) => `<li class="small" style="margin-bottom:5px">${x}</li>`).join('')}</ul>`;
+
   return `<div class="card">
-      <div class="card-title"><h3>📖 Мои операции</h3></div>
-      ${
-        tx.length
-          ? `<div class="list">${tx
-              .map(
-                (t) => `<div class="item">
-                  <div class="spread"><span class="small"><b>${TX_KINDS[t.kind] || t.kind}</b>${t.byMaster ? ' <span class="badge red">мастер</span>' : ''}</span>
-                    <span class="tiny muted">${C.fmtTimeOfDay(t.at)} · ${C.SEASON_LABELS[t.season] || ''} ${t.year}</span></div>
-                  <div class="tiny">${t.fromName ? C.esc(t.fromName) : '—'} → ${t.toName ? C.esc(t.toName) : '—'} · ${C.bundleText(t.items)}${
-                    t.items2 ? ` ⇄ ${C.bundleText(t.items2)}` : ''
-                  }</div>
-                  ${t.note ? `<div class="tiny muted">${C.esc(t.note)}</div>` : ''}
-                </div>`,
-              )
-              .join('')}</div>`
-          : '<p class="small muted mb0">Операций пока нет.</p>'
-      }
+      <div class="card-title"><h2 style="margin:0">${C.ROLE_ICONS[me.role] || '📕'} ${C.ROLE_LABELS[me.role] || 'Без роли'}</h2>
+        <span class="tiny muted">год ${S.time.year} из ${S.time.totalYears}</span></div>
+      ${role ? `<p class="small" style="color:var(--gold2)">${role.title}</p>` : ''}
+      <h3>🎯 Цель</h3>
+      <p class="small mb0">${common.goal}</p>
     </div>
-    ${feedCard(30)}`;
+
+    ${
+      role
+        ? `<div class="card">
+            <div class="card-title"><h3>✅ Что вы можете</h3></div>
+            ${bullets(role.can)}
+          </div>
+          <div class="card">
+            <div class="card-title"><h3>🚫 Что нельзя</h3></div>
+            ${bullets(role.cant)}
+            <hr>
+            <h3>🧾 Налоги</h3>
+            <p class="small mb0">${role.pay}</p>
+          </div>`
+        : '<div class="card"><p class="small muted mb0">Роль пока не назначена — дождитесь мастера.</p></div>'
+    }
+
+    <div class="card">
+      <div class="card-title"><h3>📆 Когда что происходит</h3></div>
+      <div class="scroll-x"><table>
+        ${common.when
+          .map(
+            ([s, text]) => `<tr${C.SEASON_LABELS[season()] && s.includes(C.SEASON_LABELS[season()]) ? ' style="color:var(--gold2)"' : ''}>
+              <td class="nowrap">${s}</td><td class="small">${text}</td></tr>`,
+          )
+          .join('')}
+      </table></div>
+      <p class="tiny muted mt mb0">Сезон длится ${Math.round(S.time.seasonDurationSec / 60)} мин, 4 сезона = 1 год, всего ${S.time.totalYears} лет.</p>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><h3>🤝 Общие правила обмена</h3></div>
+      ${bullets(common.can)}
+    </div>
+
+    <div class="card">
+      <div class="card-title"><h3>📊 Что известно всем</h3></div>
+      <div class="scroll-x"><table>
+        <tr><td>Цена лодки</td><td class="mono">${S.config.boatPrice}</td></tr>
+        <tr><td>Цена выкупа крестьянина</td><td class="mono">${S.config.ransomPrice}</td></tr>
+        <tr><td>Урожайность</td><td class="mono">1 → ${S.config.harvestYield}</td></tr>
+        <tr><td>Лимит налога феодала (год)</td><td class="mono">${S.config.feudalTaxCropsPerYear} 🌾 + ${S.config.feudalTaxMoneyPerYear} 💰</td></tr>
+        <tr><td>Лимит налога царя (год)</td><td class="mono">${S.config.tsarTaxCropsPerYear} 🌾 + ${S.config.tsarTaxMoneyPerYear} 💰</td></tr>
+        <tr><td>Налог вольных крестьян</td><td class="mono">${S.config.freePeasantTaxEnabled ? `${S.config.freeTaxCropsPerYear} 🌾 + ${S.config.freeTaxMoneyPerYear} 💰` : 'не введён'}</td></tr>
+        <tr><td>Курс культур на Рынке</td><td class="mono">${me.role === 'merchant' ? 'виден только на открытом Рынке' : 'знают только купцы'}</td></tr>
+      </table></div>
+    </div>`;
 }
 
 /* ------------------------------------------------------ обработчики */
-
-window.gosMode = (m) => {
-  ui.tradeMode = m;
-  render();
-};
 
 function bindActions() {
   root.querySelectorAll('[data-act]').forEach((el) => {
@@ -1267,16 +1424,6 @@ function handleAct(d) {
       send('voteElection', { candidateId: d.id });
       break;
 
-    case 'transfer': {
-      const n = C.numVal('givePlots', 0);
-      send('transfer', {
-        toId: d.id,
-        money: C.numVal('giveMoney', 0),
-        crops: C.collectCrops('givec'),
-        plots: pickPlots(n),
-      });
-      break;
-    }
     case 'tradeOffer': {
       send('tradeOffer', {
         toId: d.id,

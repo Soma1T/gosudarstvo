@@ -36,9 +36,10 @@ function publicConfig(state, { includeMarketPrices = false } = {}) {
     freePeasantTaxEnabled: c.freePeasantTaxEnabled,
     freeTaxCropsPerYear: c.freeTaxCropsPerYear,
     freeTaxMoneyPerYear: c.freeTaxMoneyPerYear,
-    marketClosedInWinter: c.marketClosedInWinter,
-    travelOnlyInWinter: c.travelOnlyInWinter,
+    travelSeasons: [...(c.travelSeasons || [])],
+    marketOpenSeasons: [...(c.marketOpenSeasons || [])],
     plantOnlyInSpring: c.plantOnlyInSpring,
+    boyarDismissPerSeason: c.boyarDismissPerSeason,
     totalYears: c.totalYears,
     seasonDurationSec: c.seasonDurationSec,
   };
@@ -66,10 +67,9 @@ function publicPlayer(state, p) {
 }
 
 function marketView(state, { includePrices = false } = {}) {
-  const season = R.SEASONS[state.time.seasonIndex];
   const out = {
-    open: !(state.config.marketClosedInWinter && season === 'winter'),
-    travelOpen: !state.config.travelOnlyInWinter || season === 'winter',
+    open: E.marketOpen(state),
+    travelOpen: E.travelOpen(state),
     merchantsOnMarket: E.playersByRole(state, 'merchant').filter((m) => m.onMarket).map((m) => ({ id: m.id, name: m.name })),
   };
   // Курсы, квоты и остатки — только купцам и мастеру.
@@ -222,7 +222,8 @@ function buildPlayerView(state, playerId) {
     return false;
   });
 
-  const seeMarketPrices = me.role === 'merchant';
+  // Курс и квоты открываются купцу только когда он на Рынке и Рынок работает.
+  const seeMarketPrices = me.role === 'merchant' && me.onMarket && E.marketOpen(state);
 
   const view = {
     type: 'state',
@@ -245,9 +246,9 @@ function buildPlayerView(state, playerId) {
       tax: { ...me.tax },
       protectedUntilYear: me.protectedUntilYear,
       notifications: me.notifications,
-      wealth: state.phase === 'lobby' ? 0 : E.playerWealth(state, me),
       locked: me.locked,
     },
+    electionBlock: A.electionBlockReason(state, me),
     players: all.map((p) => publicPlayer(state, p)),
     market: marketView(state, { includePrices: seeMarketPrices }),
     feed: state.feed.slice(0, 40),
@@ -265,6 +266,15 @@ function buildPlayerView(state, playerId) {
     wards: ['feudal', 'tsar', 'boyar'].includes(me.role) ? wardsView(state, me) : [],
     complaints: me.role === 'tsar' ? state.complaints.slice(0, 30) : [],
     stateFundPlots: me.role === 'tsar' ? E.plotsOf(state, A.STATE_OWNER).length : null,
+    boyarDismiss:
+      me.role === 'tsar'
+        ? (() => {
+            const key = E.seasonKey(state);
+            const rec = state.boyarDismiss && state.boyarDismiss.seasonKey === key ? state.boyarDismiss : { count: 0 };
+            const limit = Math.max(0, Math.floor(Number(state.config.boyarDismissPerSeason) || 0));
+            return { used: rec.count || 0, limit, left: Math.max(0, limit - (rec.count || 0)) };
+          })()
+        : null,
   };
   return view;
 }
@@ -286,7 +296,6 @@ function buildMasterView(state) {
       roleLabel: p.role ? R.ROLE_LABELS[p.role] : null,
       lordName: p.lordId && state.players[p.lordId] ? state.players[p.lordId].name : null,
       plots: E.plotsOf(state, p.id).map((l) => ({ id: l.id, planted: l.planted })),
-      wealth: E.playerWealth(state, p),
       unread: p.notifications.filter((n) => !n.read).length,
       taxLeftFromLord:
         p.role === 'peasant' && p.lordId && state.players[p.lordId]

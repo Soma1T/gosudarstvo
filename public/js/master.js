@@ -3,6 +3,8 @@ import * as C from './common.js';
 const root = document.getElementById('root');
 const PIN_KEY = 'gos_master_pin';
 
+const SEASON_KEYS = ['spring', 'summer', 'autumn', 'winter'];
+
 const ui = {
   tab: 'join',
   auth: 'connecting', // connecting | pin | ready
@@ -423,16 +425,30 @@ function tabTime() {
       <hr>
       <div class="card-title"><h3>Правила сезонов</h3></div>
       <table>
-        <tr><td>🌱 Весна</td><td class="small">посадка культур (1 на участок)</td></tr>
-        <tr><td>☀️ Лето</td><td class="small">сделки и политика</td></tr>
-        <tr><td>🍂 Осень</td><td class="small">авто-урожай (1 → ${S.config.harvestYield}), сбор налогов</td></tr>
-        <tr><td>❄️ Зима</td><td class="small">море открыто (переправа купцов), Рынок закрыт для продажи системе</td></tr>
+        <tr><td>🌱 Весна</td><td class="small">посадка культур (1 на участок), Рынок принимает культуры</td></tr>
+        <tr><td>☀️ Лето</td><td class="small">сделки и политика, Рынок принимает культуры</td></tr>
+        <tr><td>🍂 Осень</td><td class="small">авто-урожай (1 → ${S.config.harvestYield}), сбор налогов, море открыто, Рынок закрыт</td></tr>
+        <tr><td>❄️ Зима</td><td class="small">море открыто, Рынок закрыт, торговля на материке</td></tr>
       </table>
       <hr>
       <div class="grid g2">
+        <div>
+          <label>⛵ Море открыто (переправа купцов)</label>
+          ${SEASON_KEYS.map(
+            (s) => `<label class="check"><input type="checkbox" id="trv_${s}" ${(S.config.travelSeasons || []).includes(s) ? 'checked' : ''}> ${C.SEASON_ICONS[s]} ${C.SEASON_LABELS[s]}</label>`,
+          ).join('')}
+        </div>
+        <div>
+          <label>🏪 Рынок принимает культуры</label>
+          ${SEASON_KEYS.map(
+            (s) => `<label class="check"><input type="checkbox" id="mkt_${s}" ${(S.config.marketOpenSeasons || []).includes(s) ? 'checked' : ''}> ${C.SEASON_ICONS[s]} ${C.SEASON_LABELS[s]}</label>`,
+          ).join('')}
+        </div>
+      </div>
+      <button class="wide ghost mt" data-act="saveMarketSeasons">Сохранить сезоны Рынка и переправы</button>
+      <hr>
+      <div class="grid g2">
         <label class="check"><input type="checkbox" id="cfg_plantOnlyInSpring" ${S.config.plantOnlyInSpring ? 'checked' : ''}> Сажать только Весной</label>
-        <label class="check"><input type="checkbox" id="cfg_marketClosedInWinter" ${S.config.marketClosedInWinter ? 'checked' : ''}> Зимой Рынок закрыт</label>
-        <label class="check"><input type="checkbox" id="cfg_travelOnlyInWinter" ${S.config.travelOnlyInWinter ? 'checked' : ''}> Переправа только Зимой</label>
         <label class="check"><input type="checkbox" id="cfg_taxOncePerSeason" ${S.config.taxOncePerSeason ? 'checked' : ''}> Налог не чаще раза в сезон</label>
       </div>
       <button class="wide ghost mt" data-act="saveSeasonFlags">Сохранить переключатели</button>
@@ -478,6 +494,7 @@ function tabEcon() {
           ['freeTaxCropsPerYear', 'Налог вольных: культур/год'],
           ['freeTaxMoneyPerYear', 'Налог вольных: монет/год'],
           ['overthrowProtectionYears', 'Защита бояр после свержения, лет'],
+          ['boyarDismissPerSeason', 'Разжалований бояр за сезон'],
         ]
           .map(([k, label]) => `<div><label>${label}</label><input type="number" min="0" id="cfg_${k}" value="${S.config[k]}"></div>`)
           .join('')}
@@ -505,21 +522,16 @@ function tabEcon() {
     </div>
 
     <div class="card">
-      <div class="card-title"><h3>📊 Подсчёт итогов</h3></div>
-      <div class="grid g2">
-        <div><label>Стоимость участка</label><input type="number" min="0" id="sc_plotValue" value="${S.config.scoring.plotValue}"></div>
-        <div><label>Стоимость лодки</label><input type="number" min="0" id="sc_boatValue" value="${S.config.scoring.boatValue}"></div>
-        <div><label>Стоимость культуры (если не по курсу)</label><input type="number" min="0" id="sc_cropValue" value="${S.config.scoring.cropValue}"></div>
-      </div>
-      <label class="check mt"><input type="checkbox" id="sc_fromMarket" ${S.config.scoring.cropValueFromMarket ? 'checked' : ''}> Считать культуры по текущему курсу Рынка</label>
-      <button class="wide ghost mt" data-act="saveScoring">Сохранить</button>
+      <div class="card-title"><h3>📊 Итоги игры</h3></div>
+      <p class="small muted">Победитель определяется <b>только по личным монетам</b>. Культуры, участки и лодка в зачёт не идут.</p>
+      <button class="ghost sm" data-act="recomputeResults">Пересчитать итоги</button>
       ${
         S.results
-          ? `<hr><div class="scroll-x"><table><tr><th>#</th><th>Игрок</th><th>Роль</th><th>Богатство</th></tr>
+          ? `<hr><div class="scroll-x"><table><tr><th>#</th><th>Игрок</th><th>Роль</th><th>Монеты</th></tr>
               ${S.results.rows
-                .map((r, i) => `<tr><td>${i + 1}</td><td>${C.esc(r.name)}</td><td class="tiny">${C.ROLE_LABELS[r.role] || '—'}</td><td class="mono"><b>${r.wealth}</b></td></tr>`)
+                .map((r, i) => `<tr><td>${i + 1}</td><td>${C.esc(r.name)}</td><td class="tiny">${C.ROLE_LABELS[r.role] || '—'}</td><td class="mono"><b>${r.money}</b></td></tr>`)
                 .join('')}</table></div>`
-          : ''
+          : '<p class="tiny muted mt mb0">Итоги появятся после завершения игры.</p>'
       }
     </div>
   </div>`;
@@ -598,7 +610,7 @@ function playerEditor(p) {
   return `<div class="card">
       <div class="card-title">
         <h3>🛠️ ${C.esc(p.name)} ${C.roleBadge(p.role)}</h3>
-        <span class="tiny muted">богатство ${p.wealth} · ${p.connected ? 'онлайн' : 'офлайн'}${p.unread ? ` · ${p.unread} непрочит.` : ''}</span>
+        <span class="tiny muted">монет ${p.money} · ${p.connected ? 'онлайн' : 'офлайн'}${p.unread ? ` · ${p.unread} непрочит.` : ''}</span>
       </div>
 
       <div class="grid g2">
@@ -989,7 +1001,15 @@ function handleAct(d) {
       if (confirm('Завершить игру и подвести итоги?')) mact('finishGame');
       break;
     case 'saveSeasonFlags':
-      mact('setConfig', { patch: cfgFrom(['plantOnlyInSpring', 'marketClosedInWinter', 'travelOnlyInWinter', 'taxOncePerSeason']) });
+      mact('setConfig', { patch: cfgFrom(['plantOnlyInSpring', 'taxOncePerSeason']) });
+      break;
+    case 'saveMarketSeasons':
+      mact('setConfig', {
+        patch: {
+          travelSeasons: SEASON_KEYS.filter((s) => C.boolVal(`trv_${s}`)),
+          marketOpenSeasons: SEASON_KEYS.filter((s) => C.boolVal(`mkt_${s}`)),
+        },
+      });
       break;
 
     /* экономика */
@@ -1016,6 +1036,7 @@ function handleAct(d) {
           'freeTaxCropsPerYear',
           'freeTaxMoneyPerYear',
           'overthrowProtectionYears',
+          'boyarDismissPerSeason',
           'freePeasantTaxEnabled',
           'allowMerchantDowngrade',
         ]),
@@ -1030,18 +1051,6 @@ function handleAct(d) {
       break;
     case 'saveStateCrops':
       mact('setStateCrops', { crops: C.collectCrops('scrop') });
-      break;
-    case 'saveScoring':
-      mact('setConfig', {
-        patch: {
-          scoring: {
-            plotValue: C.numVal('sc_plotValue', 0),
-            boatValue: C.numVal('sc_boatValue', 0),
-            cropValue: C.numVal('sc_cropValue', 0),
-            cropValueFromMarket: C.boolVal('sc_fromMarket'),
-          },
-        },
-      });
       break;
 
     /* игрок */

@@ -413,6 +413,43 @@ label {
   font-size: 10.5px;
 }
 
+.plot-map {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(86px, 1fr));
+  gap: 8px;
+}
+.plot-cell {
+  border: 2px dashed #4a3f2d;
+  border-radius: 10px;
+  background: repeating-linear-gradient(45deg, #1d1912, #1d1912 6px, #211c14 6px, #211c14 12px);
+  padding: 8px 6px;
+  text-align: center;
+}
+.plot-cell.sown {
+  border-style: solid;
+  border-color: #4e7a34;
+  background: linear-gradient(180deg, #24361b 0%, #1c2a15 100%);
+}
+.plot-cell-id {
+  font-size: 10px;
+  color: var(--muted);
+  letter-spacing: 0.5px;
+}
+.plot-cell-ico {
+  font-size: 26px;
+  line-height: 1.2;
+}
+.plot-cell.sown .plot-cell-ico {
+  filter: drop-shadow(0 0 6px rgba(120, 200, 90, 0.35));
+}
+.plot-cell-name {
+  font-size: 11px;
+  color: var(--text);
+}
+.plot-cell:not(.sown) .plot-cell-name {
+  color: var(--muted);
+}
+
 .list {
   display: flex;
   flex-direction: column;

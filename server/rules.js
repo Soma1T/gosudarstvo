@@ -78,20 +78,15 @@ function defaultConfig() {
     // Рынок
     marketRates: { carrot: 5, potato: 5, beet: 5, pea: 5 },
     marketQuotas: { carrot: 100, potato: 100, beet: 100, pea: 100 },
-    marketClosedInWinter: true,
-    travelOnlyInWinter: true,
+    // Море открыто (переправа купцов) — Осенью и Зимой.
+    travelSeasons: ['autumn', 'winter'],
+    // Рынок принимает культуры (продажа системе) — Весной и Летом.
+    marketOpenSeasons: ['spring', 'summer'],
 
     // Прочее
     allowMerchantDowngrade: false,
     overthrowProtectionYears: 1,
-
-    // Подсчёт итогов
-    scoring: {
-      plotValue: 20,
-      boatValue: 50,
-      cropValueFromMarket: true,
-      cropValue: 5,
-    },
+    boyarDismissPerSeason: 1,
   };
 }
 
